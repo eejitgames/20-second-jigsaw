@@ -424,7 +424,7 @@ module Main
     @target = TARGET.dup
     @shade = PANEL.merge(a: 140)
     @card = PANEL.merge(x: 400, y: 260, w: 480, h: 210, a: 245)
-    @result = LABEL.merge(y: 438, size_enum: 4, text: 'Jigsaw Puzzle', a: 255)
+    @result = LABEL.merge(y: 438, size_enum: 4, text: 'Jigsaw Challenge', a: 255)
 
     # Timed mode button (default selection)
     @button = PANEL.merge(
@@ -877,7 +877,7 @@ module Main
     @grid.each { |line| line.a = GRID_LINE[:a] }
 
     # Restore title.
-    @result.text = 'Jigsaw Puzzle'
+    @result.text = 'Jigsaw Challenge'
     @result.x = 640
     @result.y = 438
     @result.size_enum = 4
