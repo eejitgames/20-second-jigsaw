@@ -424,12 +424,49 @@ module Main
     @target = TARGET.dup
     @shade = PANEL.merge(a: 140)
     @card = PANEL.merge(x: 400, y: 260, w: 480, h: 210, a: 245)
-    @result = LABEL.merge(y: 438, size_enum: 4, text: '20 Second Jigsaw', a: 255)
-    @button = PANEL.merge(x: 510, y: 310, w: 260, h: 58, r: 56, g: 91, b: 115, a: 255)
-    @button_label = LABEL.merge(y: 353, text: 'Start Game', size_enum: 2, a: 255)
-    @again_help = LABEL.merge(y: 298, text: 'Click Start Game or press Enter', a: 255)
-    @instructions = LABEL.merge(y: 398, text: 'Assemble the picture in 20 seconds.', a: 255)
-    @menu_draw = [@shade, @card, @button, @result, @instructions, @button_label, @again_help]
+    @result = LABEL.merge(y: 438, size_enum: 4, text: 'Jigsaw Puzzle', a: 255)
+
+    # Timed mode button (default selection)
+    @button = PANEL.merge(
+      x: 400, y: 310, w: 220, h: 58,
+      r: 56, g: 91, b: 115, a: 255
+    )
+    @button_label = LABEL.merge(
+      x: 510, y: 353, text: '20 Second Mode',
+      size_enum: 2, a: 255
+    )
+
+    # Untimed mode button
+    @untimed_button = PANEL.merge(
+      x: 660, y: 310, w: 220, h: 58,
+      r: 56, g: 91, b: 115, a: 255
+    )
+    @untimed_label = LABEL.merge(
+      x: 770, y: 353, text: 'Untimed Mode',
+      size_enum: 2, a: 255
+    )
+
+    @again_help = LABEL.merge(
+      y: 250, text: 'Choose a game mode',
+      a: 255
+    )
+
+    @instructions = LABEL.merge(
+      y: 398, text: 'Assemble the picture.',
+      a: 255
+    )
+
+    # Timed mode remains the default.
+    @timed_mode = true
+
+    # Both buttons must be included in the menu rendering array.
+    @menu_draw = [
+      @shade, @card,
+      @button, @untimed_button,
+      @result, @instructions,
+      @button_label, @untimed_label,
+      @again_help
+    ]    
     @end_draw = [@result, @button, @button_label, @again_help]
     @grid = []
     6.times do |column|
@@ -571,10 +608,33 @@ module Main
         @end_draw.each { |primitive| primitive.a = (255 * opacity).to_i }
       end
       mouse = inputs.mouse
-      clicked = mouse.down && mouse.button_left && mouse.x >= @button.x &&
-                mouse.x <= @button.x + @button.w && mouse.y >= @button.y &&
-                mouse.y <= @button.y + @button.h
-      if @result_age >= FADE_TICKS && (clicked || inputs.keyboard.key_down.enter)
+      timed_clicked = mouse.down && mouse.button_left &&
+                      mouse.x >= @button.x &&
+                      mouse.x <= @button.x + @button.w &&
+                      mouse.y >= @button.y &&
+                      mouse.y <= @button.y + @button.h
+
+      untimed_clicked = mouse.down && mouse.button_left &&
+                        mouse.x >= @untimed_button.x &&
+                        mouse.x <= @untimed_button.x + @untimed_button.w &&
+                        mouse.y >= @untimed_button.y &&
+                        mouse.y <= @untimed_button.y + @untimed_button.h
+
+      clicked = timed_clicked || untimed_clicked
+      if @result_age >= FADE_TICKS &&
+         (clicked || ( @phase == :menu && inputs.keyboard.key_down.enter))
+        if @phase == :menu
+          @timed_mode = !untimed_clicked
+          @prepare_pending = true
+          @button_label.text = 'Preparing...'
+          @button.r = 90
+          @button.g = 145
+          @button.b = 170
+          @untimed_button.r = 90
+          @untimed_button.g = 145
+          @untimed_button.b = 170
+          return
+        end 
         if @phase == :preview
           # Begin the already prepared round; do not reroll the preview image.
           @phase = :playing
@@ -585,12 +645,7 @@ module Main
           @end_draw.each { |primitive| primitive.a = 0 }
           @button_label.text = 'Play Again'
         else
-          # Render click feedback before doing the work on the following tick.
-          @prepare_pending = true
-          @button_label.text = 'Preparing...'
-          @button.r = 90
-          @button.g = 145
-          @button.b = 170
+          return_to_menu
         end
       end
       return
@@ -614,7 +669,9 @@ module Main
         end
       end
     end
-    @phase = @held ? :grace : :settling if @phase == :playing && @clock >= RUN_TICKS
+    if @timed_mode && @phase == :playing && @clock >= RUN_TICKS
+      @phase = @held ? :grace : :settling
+    end
     @phase = :settling if @phase == :grace && !@held
     return unless @phase == :settling
     return if @pieces.any? { |piece| piece.status == :flying }
@@ -651,13 +708,17 @@ module Main
   end
 
   def update_hud
-    if @timer_clock != @clock
-      tenths = [((RUN_TICKS - @clock) / 6.0).ceil, 0].max
-      if @timer_tenths != tenths
-        @timer.text = "#{(tenths / 10.0).floor}.#{tenths % 10}"
-        @timer_tenths = tenths
+    if @timed_mode
+      if @timer_clock != @clock
+        tenths = [((RUN_TICKS - @clock) / 6.0).ceil, 0].max
+        if @timer_tenths != tenths
+          @timer.text = "#{(tenths / 10.0).floor}.#{tenths % 10}"
+          @timer_tenths = tenths
+        end
+        @timer_clock = @clock
       end
-      @timer_clock = @clock
+    else
+      @timer.text = 'Untimed'
     end
     if @phase == :menu || @phase == :preview || @phase == :result
       @message.text = "" unless @message.text.empty?
@@ -782,6 +843,100 @@ module Main
     @target.g = @swap_target ? 200 : 240
     @target.b = @swap_target ? 80 : 150
     @target.a = 255
+  end
+
+  def return_to_menu
+    # Return to the original opening menu.
+    @phase = :menu
+    @game_scene = :menu
+
+    # Restore default game mode.
+    @timed_mode = true
+
+    # Clear previous puzzle state.
+    @pieces = []
+    @held = nil
+    @limbo = false
+    @target.a = 0
+
+    # Reset timer and round state.
+    @clock = 0
+    @arrival_clock = 0
+    @timer_started = false
+    @timer_clock = nil
+    @timer_tenths = nil
+    @settled_frames = 0
+
+    # Restore original background and picture state.
+    @background = BACKGROUND.dup
+    @picture.path = nil
+    @picture.a = 0
+    @picture_reveal_age = 0
+
+    # Restore grid.
+    @grid.each { |line| line.a = GRID_LINE[:a] }
+
+    # Restore title.
+    @result.text = 'Jigsaw Puzzle'
+    @result.x = 640
+    @result.y = 438
+    @result.size_enum = 4
+
+    # Restore original instruction.
+    @instructions.text = 'Assemble the picture.'
+    @instructions.x = 640
+    @instructions.y = 398
+    @instructions.size_enum = -1
+
+    # Restore timed mode button.
+    @button.x = 400
+    @button.y = 310
+    @button.w = 220
+    @button.h = 58
+    @button.r = 56
+    @button.g = 91
+    @button.b = 115
+
+    @button_label.x = 510
+    @button_label.y = 353
+    @button_label.text = '20 Second Mode'
+    @button_label.size_enum = 2
+
+    # Restore untimed mode button.
+    @untimed_button.x = 660
+    @untimed_button.y = 310
+    @untimed_button.w = 220
+    @untimed_button.h = 58
+    @untimed_button.r = 56
+    @untimed_button.g = 91
+    @untimed_button.b = 115
+
+    @untimed_label.x = 770
+    @untimed_label.y = 353
+    @untimed_label.text = 'Untimed Mode'
+    @untimed_label.size_enum = 2
+
+    # Restore text underneath the menu.
+    @again_help.text = 'Choose a game mode'
+    @again_help.x = 640
+    @again_help.y = 250
+    @again_help.size_enum = -1
+
+    # Restore original menu opacity.
+    @shade.a = 140
+    @card.a = 245
+
+    @result.a = 255
+    @instructions.a = 255
+    @button.a = 255
+    @button_label.a = 255
+    @untimed_button.a = 255
+    @untimed_label.a = 255
+    @again_help.a = 255
+
+    # Clear any pending preparation.
+    @result_age = FADE_TICKS
+    @prepare_pending = false
   end
 
   def drop_piece
