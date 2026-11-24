@@ -540,7 +540,7 @@ module Main
       end
     end
     @image_index = @image_bag.pop
-    puts "Jigsaw round #{@round_serial}: #{IMAGES[@image_index]}"
+    # putz "Jigsaw round #{@round_serial}: #{IMAGES[@image_index]}"
     @picture.path = IMAGES[@image_index]
     @picture.a = 255
     @picture_reveal_age = 0
@@ -626,15 +626,33 @@ module Main
         if @phase == :menu
           @timed_mode = !untimed_clicked
           @prepare_pending = true
-          @button_label.text = 'Preparing...'
-          @button.r = 90
-          @button.g = 145
-          @button.b = 170
-          @untimed_button.r = 90
-          @untimed_button.g = 145
-          @untimed_button.b = 170
+
+          # Reset both labels before highlighting the selected option.
+          @button_label.text = '20 Second Mode'
+          @untimed_label.text = 'Untimed Mode'
+
+          @button.r = 56
+          @button.g = 91
+          @button.b = 115
+
+          @untimed_button.r = 56
+          @untimed_button.g = 91
+          @untimed_button.b = 115
+
+          if @timed_mode
+            @button_label.text = 'Preparing...'
+            @button.r = 90
+            @button.g = 145
+            @button.b = 170
+          else
+            @untimed_label.text = 'Preparing...'
+            @untimed_button.r = 90
+            @untimed_button.g = 145
+            @untimed_button.b = 170
+          end
+
           return
-        end 
+        end
         if @phase == :preview
           # Begin the already prepared round; do not reroll the preview image.
           @phase = :playing
