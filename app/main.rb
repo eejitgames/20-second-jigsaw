@@ -383,7 +383,7 @@ module Main
     win:  "sounds/bright_tiles_loop.ogg",
     lose: "sounds/quiet_library_loop.ogg"
   }.freeze
-  MUSIC_STATUS = { false => '(M) Music: On', true => '(M) Music: Muted' }.freeze
+  MUSIC_STATUS = { false => 'Music: On', true => 'Music: Muted' }.freeze
   IMAGES = [
     'sprites/folk-art/dawn-hudson/abstract-faces.jpg',
     'sprites/folk-art/dawn-hudson/folk-art-flower.jpg',
@@ -449,6 +449,8 @@ module Main
 
     @mode_hint = LABEL.merge(y: 250, text: 'Choose a game mode', a: 255)
     @music_muted ||= false
+    @music_button = PANEL.merge(x: 860, y: 12, w: 200, h: 44,
+                                r: 56, g: 91, b: 115, a: 255)
     @music_indicator = LABEL.merge(x: 960, y: 45, size_enum: 1,
                                    text: MUSIC_STATUS[@music_muted])
 
@@ -548,11 +550,13 @@ module Main
 
   def tick
     if inputs.keyboard.has_focus
-      if inputs.keyboard.key_down.m
+      mouse = inputs.mouse
+      music_clicked = mouse.key_down.left && button_hit?(mouse, @music_button)
+      if music_clicked || inputs.keyboard.key_down.m
         @music_muted = !@music_muted
         @music_indicator.text = MUSIC_STATUS[@music_muted]
       end
-      update_run
+      update_run(music_clicked)
       update_picture
     end
     update_music
@@ -580,7 +584,7 @@ module Main
       mouse.y >= button.y && mouse.y <= button.y + button.h
   end
 
-  def update_run
+  def update_run music_clicked
     if @prepare_pending
       # The previous tick rendered the acknowledgement. Keep that frame visible
       # while the existing synchronous puzzle generation runs unchanged.
@@ -595,7 +599,7 @@ module Main
         @end_draw.each { |primitive| primitive.a = (255 * opacity).to_i }
       end
       mouse = inputs.mouse
-      left_pressed = mouse.key_down.left
+      left_pressed = mouse.key_down.left && !music_clicked
       clicked = left_pressed && button_hit?(mouse, @button)
       untimed_clicked = @phase == :menu && left_pressed && button_hit?(mouse, @untimed_button)
       if @result_age >= FADE_TICKS && (clicked || untimed_clicked)
@@ -646,7 +650,7 @@ module Main
     end
 
     # The player cannot act until the first non-corner piece has landed.
-    handle_input if @timer_started
+    handle_input(music_clicked) if @timer_started
     return if @limbo
     JigsawArrivals.update(@pieces, @arrival_clock, @phase == :playing)
     @arrival_clock += 1 if @phase == :playing
@@ -773,10 +777,11 @@ module Main
     end
     outputs.primitives << @menu_draw if @phase == :menu
     outputs.primitives << @end_draw if @phase == :preview || @phase == :result
+    outputs.primitives << @music_button
     outputs.primitives << @music_indicator
   end
 
-  def handle_input
+  def handle_input music_clicked
     mouse = inputs.mouse
     left_pressed = mouse.key_down.left
     if @held && !@was_focused && (!mouse.button_left || left_pressed)
@@ -786,13 +791,14 @@ module Main
       @held.outline.b = 81
     end
     if @limbo
-      return unless left_pressed && mouse.button_left && JigsawPieces.contains?(@held, mouse.x, mouse.y)
+      return unless left_pressed && !music_clicked && mouse.button_left &&
+                    JigsawPieces.contains?(@held, mouse.x, mouse.y)
       @limbo = false
       @offset_x = mouse.x - @held.x
       @offset_y = mouse.y - @held.y
       @held.outline.g = 255
       @held.outline.b = 255
-    elsif @phase == :playing && left_pressed && !@held
+    elsif @phase == :playing && left_pressed && !music_clicked && !@held
       # Hit testing follows the same front-to-back order as rendering.
       order = @pieces.reverse
       @held = order.find do |piece|
