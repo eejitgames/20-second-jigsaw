@@ -11,7 +11,8 @@ module JigsawCuts
   SOURCE_HEIGHT = 360
   SCALE = ROWS * EDGE / SOURCE_HEIGHT.to_f
   CROP_X = (SOURCE_WIDTH - COLUMNS * EDGE / SCALE) * 0.5
-  EPSILON = 0.000001
+  # Binary fractions keep shared vertices and orientation tests exact at this board size.
+  CUT_GRID = 8.0
 
   # Narrow shoulders lead into a circular head. The middle four curves
   # trace 270 degrees of a circle; one radius keeps both axes equally round.
@@ -25,17 +26,30 @@ module JigsawCuts
     [0.7071, 0.4429, 0.55, 0.2854, 0.54, 0, 1.4, 0].freeze
   ].freeze
 
-  def outlines
+  def meshes
+    # Validate the whole board before baking. Regenerating one piece would
+    # break its shared edges, so use a complete fixed cut set as the fallback.
+    [true, false].each do |randomized|
+      cuts = outlines(randomized)
+      valid = cuts.all? do |cut|
+        cut.triangles = triangulate(cut.points)
+      end
+      return cuts if valid
+    end
+    raise 'The fixed jigsaw cut set could not be triangulated.'
+  end
+
+  def outlines randomized
     horizontal = []
     (ROWS + 1).times do |row|
       horizontal << COLUMNS.times.map do |column|
-        edge(column * EDGE, row * EDGE, 1, 0, row == 0 || row == ROWS)
+        edge(column * EDGE, row * EDGE, 1, 0, row == 0 || row == ROWS, randomized)
       end
     end
     vertical = []
     ROWS.times do |row|
       vertical << (COLUMNS + 1).times.map do |column|
-        edge(column * EDGE, row * EDGE, 0, 1, column == 0 || column == COLUMNS)
+        edge(column * EDGE, row * EDGE, 0, 1, column == 0 || column == COLUMNS, randomized)
       end
     end
     result = []
@@ -56,13 +70,19 @@ module JigsawCuts
     result
   end
 
-  def edge x, y, dx, dy, flat
+  def edge x, y, dx, dy, flat, randomized
     points = [{ x: x, y: y }]
     unless flat
-      center = EDGE * 0.5 + rand * 20 - 10
-      radius = 28 + rand * 4
-      polarity = rand < 0.5 ? -1 : 1
-      offset = center - radius * 1.4
+      center = EDGE * 0.5
+      if randomized
+        center += rand * 20 - 10
+        radius = 28 + rand * 4
+        polarity = rand < 0.5 ? -1 : 1
+      else
+        radius = 30
+        polarity = ((x + y) % (2 * EDGE)).zero? ? 1 : -1
+      end
+      offset = snap_cut(center - radius * 1.4)
       points << { x: x + dx * offset, y: y + dy * offset }
       CURVES.each do |curve|
         8.times do |step|
@@ -72,6 +92,8 @@ module JigsawCuts
                                      3 * u*t*t * curve[4] + t**3 * curve[6])
           across = radius * polarity * (u**3 * curve[1] + 3 * u*u*t * curve[3] +
                              3 * u*t*t * curve[5] + t**3 * curve[7])
+          along = snap_cut(along)
+          across = snap_cut(across)
           points << { x: x + dx * along - dy * across,
                       y: y + dy * along + dx * across }
         end
@@ -79,6 +101,10 @@ module JigsawCuts
     end
     points << { x: x + dx * EDGE, y: y + dy * EDGE }
     points
+  end
+
+  def snap_cut coordinate
+    (coordinate * CUT_GRID).round / CUT_GRID
   end
 
   def cross a, b, c
@@ -94,11 +120,10 @@ module JigsawCuts
       remaining.each_with_index do |b, index|
         a = remaining[(index - 1) % remaining.length]
         c = remaining[(index + 1) % remaining.length]
-        next if cross(a, b, c) <= EPSILON
+        next if cross(a, b, c) <= 0
         blocked = remaining.any? do |p|
           next false if p.equal?(a) || p.equal?(b) || p.equal?(c)
-          cross(a, b, p) >= -EPSILON && cross(b, c, p) >= -EPSILON &&
-            cross(c, a, p) >= -EPSILON
+          cross(a, b, p) >= 0 && cross(b, c, p) >= 0 && cross(c, a, p) >= 0
         end
         unless blocked
           ear = index
@@ -106,11 +131,21 @@ module JigsawCuts
           break
         end
       end
-      raise 'Jigsaw cut could not be triangulated.' unless ear
+      return nil unless ear
       remaining.delete_at ear
     end
+    return nil if cross(remaining[0], remaining[1], remaining[2]) <= 0
     triangles << remaining
-    triangles
+
+    # Compare signed double areas on the same exact grid. A partial mesh must
+    # never reach the renderer, even when every individual triangle is valid.
+    contour_area = 0
+    (1...(points.length - 1)).each do |index|
+      contour_area += cross(points[0], points[index], points[index + 1])
+    end
+    mesh_area = 0
+    triangles.each { |a, b, c| mesh_area += cross(a, b, c) }
+    contour_area == mesh_area ? triangles : nil
   end
 end
 
@@ -134,7 +169,7 @@ module JigsawPieces
   LIGHT_LINE = { r: 246, g: 240, b: 220, a: 235 }.freeze
 
   def generate path, output
-    JigsawCuts.outlines.map do |cut|
+    JigsawCuts.meshes.map do |cut|
       home_x = JigsawCuts::BOARD_X + cut.column * JigsawCuts::EDGE
       home_y = JigsawCuts::BOARD_Y + cut.row * JigsawCuts::EDGE
       piece = PIECE.merge(home_x: home_x, home_y: home_y, points: cut.points,
@@ -169,7 +204,7 @@ module JigsawPieces
     piece.outline = piece.artwork.merge(path: outline_name)
     piece.draw = [piece.artwork, piece.outline]
 
-    JigsawCuts.triangulate(cut.points).each do |a, b, c|
+    cut.triangles.each do |a, b, c|
       art_target.sprites << {
         x: a.x + ox, y: a.y + oy, x2: b.x + ox, y2: b.y + oy, x3: c.x + ox, y3: c.y + oy,
         source_x: source_x(cut, a), source_y: source_y(cut, a),
