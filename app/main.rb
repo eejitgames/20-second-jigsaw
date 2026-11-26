@@ -383,6 +383,7 @@ module Main
     win:  "sounds/bright_tiles_loop.ogg",
     lose: "sounds/quiet_library_loop.ogg"
   }.freeze
+  MUSIC_STATUS = { false => '(M) Music: On', true => '(M) Music: Muted' }.freeze
   IMAGES = [
     'sprites/folk-art/dawn-hudson/abstract-faces.jpg',
     'sprites/folk-art/dawn-hudson/folk-art-flower.jpg',
@@ -446,10 +447,10 @@ module Main
       size_enum: 2, a: 255
     )
 
-    @again_help = LABEL.merge(
-      y: 250, text: 'Choose a game mode',
-      a: 255
-    )
+    @mode_hint = LABEL.merge(y: 250, text: 'Choose a game mode', a: 255)
+    @music_muted ||= false
+    @music_indicator = LABEL.merge(x: 960, y: 45, size_enum: 1,
+                                   text: MUSIC_STATUS[@music_muted])
 
     @instructions = LABEL.merge(
       y: 398, text: 'Assemble the picture.',
@@ -465,9 +466,9 @@ module Main
       @button, @untimed_button,
       @result, @instructions,
       @button_label, @untimed_label,
-      @again_help
-    ]    
-    @end_draw = [@result, @button, @button_label, @again_help]
+      @mode_hint
+    ]
+    @end_draw = [@result, @button, @button_label]
     @grid = []
     6.times do |column|
       x = JigsawCuts::BOARD_X + column * JigsawCuts::EDGE
@@ -518,10 +519,6 @@ module Main
     @button_label.y = 45
     @button_label.size_enum = 1
     @button_label.text = 'Begin'
-    @again_help.x = 960
-    @again_help.y = 45
-    @again_help.size_enum = 1
-    @again_help.text = 'or press Enter' 
     # DR.reset reuses its seed. Give each round fresh entropy independently of
     # hot reload, and retain image history instead of clearing it in start.
     @round_serial = (@round_serial || 0) + 1
@@ -550,49 +547,39 @@ module Main
   end
 
   def tick
-    update_music
     if inputs.keyboard.has_focus
+      if inputs.keyboard.key_down.m
+        @music_muted = !@music_muted
+        @music_indicator.text = MUSIC_STATUS[@music_muted]
+      end
       update_run
       update_picture
     end
+    update_music
     update_hud
     render
     @was_focused = inputs.keyboard.has_focus
   end
   
   def update_music
-    desired = {
-      menu: nil,
-      play: MUSIC[:play],
-      win:  MUSIC[:win],
-      lose: MUSIC[:lose]
-    }[@game_scene]
-
+    desired = MUSIC[@game_scene]
     music = args.audio[:music]
+    gain = @music_muted ? 0.0 : 0.2
 
-    # 1. Nothing playing? Start music if needed.
-    if music.nil?
-      args.audio[:music] = {
-        input: desired,
-        gain: 0.2,
-        looping: true
-      } if desired
-      return
-    end
-
-    # 2. Existing music is muted? Delete it.
-    if music.gain == 0.0
+    if music && music.input == desired
+      music.gain = gain if music.gain != gain
+    elsif desired
+      args.audio[:music] = { input: desired, gain: gain, looping: true }
+    elsif music
       args.audio.delete(:music)
-      return
-    end
-
-    # 3. Wrong music (or menu)? Mute it.
-    if music.input != desired
-      music.gain = 0.0
-      return
     end
   end
-  
+
+  def button_hit? mouse, button
+    mouse.x >= button.x && mouse.x <= button.x + button.w &&
+      mouse.y >= button.y && mouse.y <= button.y + button.h
+  end
+
   def update_run
     if @prepare_pending
       # The previous tick rendered the acknowledgement. Keep that frame visible
@@ -608,21 +595,10 @@ module Main
         @end_draw.each { |primitive| primitive.a = (255 * opacity).to_i }
       end
       mouse = inputs.mouse
-      timed_clicked = mouse.down && mouse.button_left &&
-                      mouse.x >= @button.x &&
-                      mouse.x <= @button.x + @button.w &&
-                      mouse.y >= @button.y &&
-                      mouse.y <= @button.y + @button.h
-
-      untimed_clicked = mouse.down && mouse.button_left &&
-                        mouse.x >= @untimed_button.x &&
-                        mouse.x <= @untimed_button.x + @untimed_button.w &&
-                        mouse.y >= @untimed_button.y &&
-                        mouse.y <= @untimed_button.y + @untimed_button.h
-
-      clicked = timed_clicked || untimed_clicked
-      if @result_age >= FADE_TICKS &&
-         (clicked || ( @phase == :menu && inputs.keyboard.key_down.enter))
+      left_pressed = mouse.key_down.left
+      clicked = left_pressed && button_hit?(mouse, @button)
+      untimed_clicked = @phase == :menu && left_pressed && button_hit?(mouse, @untimed_button)
+      if @result_age >= FADE_TICKS && (clicked || untimed_clicked)
         if @phase == :menu
           @timed_mode = !untimed_clicked
           @prepare_pending = true
@@ -674,13 +650,15 @@ module Main
     return if @limbo
     JigsawArrivals.update(@pieces, @arrival_clock, @phase == :playing)
     @arrival_clock += 1 if @phase == :playing
-    if @phase == :playing && puzzle_complete?
-      @phase = :settling 
+    update_target if @held
+
+    complete = puzzle_complete?
+    if complete
+      @phase = :settling
       @game_scene = :win
-    end
-    if @phase == :playing
+    elsif @phase == :playing
       if @timer_started
-        @clock += 1
+        @clock += 1 if @timed_mode
       else
         @timer_started = @pieces.any? do |piece|
           piece.status == :loose && !JigsawArrivals::CORNERS.include?(piece.home_cell)
@@ -693,15 +671,13 @@ module Main
     @phase = :settling if @phase == :grace && !@held
     return unless @phase == :settling
     return if @pieces.any? { |piece| piece.status == :flying }
-    return if puzzle_complete? && @picture.a < 255
+    return if complete && @picture.a < 255
     # Leave the final placement visible before beginning the result fade.
     @settled_frames += 1
     if @settled_frames >= SETTLE_TICKS
       @phase = :result
-      
-      @game_scene = :lose unless puzzle_complete?
-      
-      @result.text = puzzle_complete? ? 'Picture complete!' : "Time's up!"
+      @game_scene = :lose unless complete
+      @result.text = complete ? 'Picture complete!' : "Time's up!"
     end
   end
 
@@ -797,23 +773,26 @@ module Main
     end
     outputs.primitives << @menu_draw if @phase == :menu
     outputs.primitives << @end_draw if @phase == :preview || @phase == :result
+    outputs.primitives << @music_indicator
   end
 
   def handle_input
     mouse = inputs.mouse
-    if @held && !@was_focused && !mouse.button_left
+    left_pressed = mouse.key_down.left
+    if @held && !@was_focused && (!mouse.button_left || left_pressed)
       @limbo = true
+      @target.a = 0
       @held.outline.g = 224
       @held.outline.b = 81
     end
     if @limbo
-      return unless mouse.down && mouse.button_left && JigsawPieces.contains?(@held, mouse.x, mouse.y)
+      return unless left_pressed && mouse.button_left && JigsawPieces.contains?(@held, mouse.x, mouse.y)
       @limbo = false
       @offset_x = mouse.x - @held.x
       @offset_y = mouse.y - @held.y
       @held.outline.g = 255
       @held.outline.b = 255
-    elsif @phase == :playing && mouse.down && mouse.button_left && !@held
+    elsif @phase == :playing && left_pressed && !@held
       # Hit testing follows the same front-to-back order as rendering.
       order = @pieces.reverse
       @held = order.find do |piece|
@@ -839,8 +818,11 @@ module Main
     x = (mouse.x - @offset_x).clamp(2 - @held.min_x, 1278 - @held.max_x)
     y = (mouse.y - @offset_y).clamp(2 - @held.min_y, 718 - @held.max_y)
     JigsawPieces.move(@held, x, y)
-    update_target
-    drop_piece unless mouse.button_left
+    unless mouse.button_left
+      # Resolve the drop against the board before advancing any flights.
+      update_target
+      drop_piece
+    end
   end
 
   def update_target
@@ -934,12 +916,6 @@ module Main
     @untimed_label.text = 'Untimed Mode'
     @untimed_label.size_enum = 2
 
-    # Restore text underneath the menu.
-    @again_help.text = 'Choose a game mode'
-    @again_help.x = 640
-    @again_help.y = 250
-    @again_help.size_enum = -1
-
     # Restore original menu opacity.
     @shade.a = 140
     @card.a = 245
@@ -950,7 +926,6 @@ module Main
     @button_label.a = 255
     @untimed_button.a = 255
     @untimed_label.a = 255
-    @again_help.a = 255
 
     # Clear any pending preparation.
     @result_age = FADE_TICKS
